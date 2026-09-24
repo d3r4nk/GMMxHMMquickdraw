@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>AI Nhận diện hình vẽ tay</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='css/main.css') }}"
+    >
+</head>
+
+<body>
+
+    <div class="container">
+
+        <header class="page-header">
+            <span class="eyebrow">AI Vision Tool</span>
+            <h1>AI Nhận diện hình vẽ tay</h1>
+        </header>
+
+        <div class="mode-switch-panel">
+            <span class="mode-label">Chế độ hoạt động</span>
+
+            <div class="mode-toggle" role="tablist" aria-label="Chế độ hoạt động">
+                <button type="button" class="mode-btn active" data-mode="draw" aria-pressed="true">
+                    Bảng vẽ
+                </button>
+
+                <button type="button" class="mode-btn" data-mode="camera" aria-pressed="false">
+                    Camera
+                </button>
+            </div>
+        </div>
+
+        <div class="mode-panel draw-panel active" id="drawPanel">
+            <div class="drawing-container">
+                <canvas id="drawingCanvas"></canvas>
+            </div>
+
+            <div class="toolbar">
+                <button id="clearAllBtn">
+                    Xóa tất cả
+                </button>
+
+                <button id="deleteLastBtn">
+                    Xóa nét gần nhất
+                </button>
+
+                <button id="undoBtn">
+                    Undo
+                </button>
+
+                <button id="okBtn" class="ok-button">
+                    OK
+                </button>
+            </div>
+        </div>
+
+        <div class="mode-panel camera-panel" id="cameraPanel">
+            <div class="camera-frame">
+                <video id="cameraPreview" autoplay playsinline muted></video>
+                <div class="camera-placeholder" id="cameraPlaceholder">
+                    Chưa có quyền truy cập camera.
+                </div>
+            </div>
+        </div>
+
+        <p id="status"></p>
+
+    </div>
+
+    <script
+        src="{{ url_for('static', filename='js/drawing.js') }}"
+    ></script>
+
+</body>
+</html>
