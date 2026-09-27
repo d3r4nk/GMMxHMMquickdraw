@@ -10,7 +10,7 @@ const cameraPanel = document.getElementById("cameraPanel");
 const cameraPreview = document.getElementById("cameraPreview");
 const cameraPlaceholder = document.getElementById("cameraPlaceholder");
 const modeButtons = document.querySelectorAll(".mode-btn");
-const status = document.getElementById("status");
+const statusElement = document.getElementById("status");
 
 
 // ========================================
@@ -523,13 +523,7 @@ function updateButtons() {
 
 function showStatus(message) {
 
-    status.textContent = message;
-
-    setTimeout(function() {
-
-        status.textContent = "";
-
-    }, 2000);
+    statusElement.textContent = message;
 }
 
 
