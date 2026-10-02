@@ -8,9 +8,12 @@ const okBtn = document.getElementById("okBtn");
 const drawPanel = document.getElementById("drawPanel");
 const cameraPanel = document.getElementById("cameraPanel");
 const cameraPreview = document.getElementById("cameraPreview");
+const cameraCanvas = document.getElementById("cameraCanvas");
+const cameraCtx = cameraCanvas.getContext("2d");
+const cameraCursor = document.getElementById("cameraCursor");
 const cameraPlaceholder = document.getElementById("cameraPlaceholder");
 const modeButtons = document.querySelectorAll(".mode-btn");
-const status = document.getElementById("status");
+const statusElement = document.getElementById("status");
 
 
 // ========================================
@@ -19,6 +22,14 @@ const status = document.getElementById("status");
 
 let currentMode = "draw";
 let cameraStream = null;
+let handLandmarker = null;
+let trackingAnimationId = null;
+let lastVideoTime = -1;
+let activeGesture = "";
+let gestureCandidate = "";
+let gestureCandidateSince = 0;
+let isRecognizing = false;
+const GESTURE_HOLD_DURATION_MS = 500;
 
 // Danh sách các nét vẽ hiện tại
 let strokes = [];
@@ -26,6 +37,9 @@ let strokes = [];
 // Các nét vừa bị xóa
 // Dùng cho chức năng Undo
 let deletedStrokes = [];
+
+let cameraStrokes = [];
+let cameraCurrentStroke = null;
 
 
 // Nét hiện tại đang được vẽ
@@ -48,6 +62,7 @@ function resizeCanvas() {
     canvas.height = rect.height;
 
     redraw();
+    resizeCameraCanvas();
 }
 
 window.addEventListener("resize", resizeCanvas);
@@ -92,6 +107,36 @@ function redraw() {
         ctx.lineJoin = "round";
 
         ctx.stroke();
+    }
+}
+
+function resizeCameraCanvas() {
+    const rect = cameraCanvas.getBoundingClientRect();
+
+    if (!rect.width || !rect.height) {
+        return;
+    }
+
+    cameraCanvas.width = rect.width;
+    cameraCanvas.height = rect.height;
+
+    for (const stroke of cameraStrokes) {
+        if (stroke.points.length < 2) {
+            continue;
+        }
+
+        cameraCtx.beginPath();
+        cameraCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+
+        for (let i = 1; i < stroke.points.length; i++) {
+            cameraCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
+        }
+
+        cameraCtx.strokeStyle = stroke.color;
+        cameraCtx.lineWidth = stroke.width;
+        cameraCtx.lineCap = "round";
+        cameraCtx.lineJoin = "round";
+        cameraCtx.stroke();
     }
 }
 
@@ -362,12 +407,18 @@ function updateModePanels() {
         cameraPreview.style.display = cameraStream ? "block" : "none";
     }
 
+    if (cameraCanvas) {
+        cameraCanvas.style.display = cameraStream ? "block" : "none";
+    }
+
     if (cameraPlaceholder) {
         cameraPlaceholder.style.display = cameraStream ? "none" : "flex";
     }
 }
 
 function stopCameraStream() {
+
+    stopHandTracking();
 
     if (cameraStream) {
         cameraStream.getTracks().forEach(function(track) {
@@ -382,6 +433,33 @@ function stopCameraStream() {
     }
 }
 
+async function initializeHandLandmarker() {
+    if (handLandmarker) {
+        return;
+    }
+
+    showStatus("Đang tải nhận diện bàn tay...");
+
+    const visionModule = await import(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs"
+    );
+    const vision = await visionModule.FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
+
+    handLandmarker = await visionModule.HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+            delegate: "CPU"
+        },
+        runningMode: "VIDEO",
+        numHands: 1,
+        minHandDetectionConfidence: 0.55,
+        minHandPresenceConfidence: 0.55,
+        minTrackingConfidence: 0.5
+    });
+}
+
 function enableCameraMode() {
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -390,22 +468,37 @@ function enableCameraMode() {
     }
 
     navigator.mediaDevices.getUserMedia({
-        video: true,
+        video: { facingMode: "user" },
         audio: false
     })
-    .then(function(stream) {
+    .then(async function(stream) {
+        if (currentMode !== "camera") {
+            stream.getTracks().forEach(function(track) {
+                track.stop();
+            });
+            return;
+        }
+
         cameraStream = stream;
 
         if (cameraPreview) {
             cameraPreview.srcObject = stream;
-            cameraPreview.play();
+            await cameraPreview.play();
         }
 
         currentMode = "camera";
         updateModeButtons();
         updateModePanels();
+        resizeCameraCanvas();
 
-        showStatus("Đã chuyển sang chế độ camera.");
+        try {
+            await initializeHandLandmarker();
+            startHandTracking();
+            showStatus("Camera đã sẵn sàng.");
+        } catch (error) {
+            showStatus("Không tải được MediaPipe. Kiểm tra kết nối Internet.");
+            console.error(error);
+        }
     })
     .catch(function() {
         currentMode = "draw";
@@ -414,6 +507,174 @@ function enableCameraMode() {
 
         showStatus("Bạn đã từ chối quyền truy cập camera.");
     });
+}
+
+function stopHandTracking() {
+    if (trackingAnimationId !== null) {
+        cancelAnimationFrame(trackingAnimationId);
+        trackingAnimationId = null;
+    }
+
+    cameraCurrentStroke = null;
+    activeGesture = "";
+    gestureCandidate = "";
+    gestureCandidateSince = 0;
+    lastVideoTime = -1;
+
+    if (cameraCursor) {
+        cameraCursor.style.display = "none";
+    }
+}
+
+function startHandTracking() {
+    if (trackingAnimationId !== null) {
+        return;
+    }
+
+    function trackFrame() {
+        if (currentMode !== "camera" || !cameraStream || !handLandmarker) {
+            trackingAnimationId = null;
+            return;
+        }
+
+        if (cameraPreview.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+            cameraPreview.currentTime !== lastVideoTime) {
+            lastVideoTime = cameraPreview.currentTime;
+            const result = handLandmarker.detectForVideo(cameraPreview, performance.now());
+            const landmarks = result.landmarks[0];
+
+            if (landmarks) {
+                processHandLandmarks(landmarks);
+            } else {
+                cameraCurrentStroke = null;
+                activeGesture = "";
+                gestureCandidate = "";
+                gestureCandidateSince = 0;
+                cameraCursor.style.display = "none";
+            }
+        }
+
+        trackingAnimationId = requestAnimationFrame(trackFrame);
+    }
+
+    trackingAnimationId = requestAnimationFrame(trackFrame);
+}
+
+function distanceBetween(first, second) {
+    return Math.hypot(first.x - second.x, first.y - second.y);
+}
+
+function classifyHandGesture(landmarks) {
+    const indexExtended = landmarks[8].y < landmarks[6].y;
+    const middleExtended = landmarks[12].y < landmarks[10].y;
+    const ringExtended = landmarks[16].y < landmarks[14].y;
+    const pinkyExtended = landmarks[20].y < landmarks[18].y;
+    const thumbIndexPinched = distanceBetween(landmarks[4], landmarks[8]) <
+        distanceBetween(landmarks[0], landmarks[9]) * 0.45;
+
+    if (thumbIndexPinched && middleExtended && ringExtended && pinkyExtended) {
+        return "recognize";
+    }
+
+    if (indexExtended && !middleExtended && !ringExtended && !pinkyExtended) {
+        return "draw";
+    }
+
+    if (!indexExtended && !middleExtended && !ringExtended && !pinkyExtended) {
+        return "clear";
+    }
+
+    return "none";
+}
+
+function getCameraPoint(landmark) {
+    const rect = cameraCanvas.getBoundingClientRect();
+    const videoWidth = cameraPreview.videoWidth;
+    const videoHeight = cameraPreview.videoHeight;
+    const scale = Math.max(rect.width / videoWidth, rect.height / videoHeight);
+    const renderedWidth = videoWidth * scale;
+    const renderedHeight = videoHeight * scale;
+    const cropLeft = (renderedWidth - rect.width) / 2;
+    const cropTop = (renderedHeight - rect.height) / 2;
+
+    return {
+        x: videoWidth * (1 - landmark.x) * scale - cropLeft,
+        y: videoHeight * landmark.y * scale - cropTop
+    };
+}
+
+function beginCameraStroke(point) {
+    cameraCurrentStroke = {
+        id: Date.now(),
+        color: "#000000",
+        width: 4,
+        points: [point]
+    };
+    cameraStrokes.push(cameraCurrentStroke);
+    cameraCtx.beginPath();
+    cameraCtx.moveTo(point.x, point.y);
+    cameraCtx.strokeStyle = cameraCurrentStroke.color;
+    cameraCtx.lineWidth = cameraCurrentStroke.width;
+    cameraCtx.lineCap = "round";
+    cameraCtx.lineJoin = "round";
+}
+
+function addCameraStrokePoint(point) {
+    if (!cameraCurrentStroke) {
+        beginCameraStroke(point);
+        return;
+    }
+
+    cameraCurrentStroke.points.push(point);
+    cameraCtx.lineTo(point.x, point.y);
+    cameraCtx.stroke();
+}
+
+function clearCameraBoard() {
+    cameraStrokes = [];
+    cameraCurrentStroke = null;
+    cameraCtx.clearRect(0, 0, cameraCanvas.width, cameraCanvas.height);
+}
+
+function processHandLandmarks(landmarks) {
+    const gesture = classifyHandGesture(landmarks);
+    const point = getCameraPoint(landmarks[8]);
+    const now = performance.now();
+
+    cameraCursor.style.left = point.x + "px";
+    cameraCursor.style.top = point.y + "px";
+    cameraCursor.style.display = "block";
+
+    if (gesture !== gestureCandidate) {
+        gestureCandidate = gesture;
+        gestureCandidateSince = now;
+        cameraCurrentStroke = null;
+    }
+
+    if (gesture === "none") {
+        cameraCurrentStroke = null;
+        activeGesture = "";
+        return;
+    }
+
+    if (now - gestureCandidateSince < GESTURE_HOLD_DURATION_MS) {
+        return;
+    }
+
+    if (gesture === "draw") {
+        addCameraStrokePoint(point);
+    } else {
+        cameraCurrentStroke = null;
+    }
+
+    if (gesture === "clear" && activeGesture !== "clear") {
+        clearCameraBoard();
+        showStatus("Đã xóa tất cả nét vẽ bằng camera.");
+    } else if (gesture === "recognize" && activeGesture !== "recognize") {
+        recognizeStrokes(cameraStrokes);
+    }
+
+    activeGesture = gesture;
 }
 
 function setDrawMode() {
@@ -456,14 +717,22 @@ modeButtons.forEach(function(button) {
 // ========================================
 
 okBtn.addEventListener("click", function() {
+    recognizeStrokes(strokes);
+});
 
-    if (strokes.length === 0) {
+function recognizeStrokes(drawingStrokes) {
+    if (drawingStrokes.length === 0) {
 
         showStatus("Chưa có nét vẽ.");
 
         return;
     }
 
+    if (isRecognizing) {
+        return;
+    }
+
+    isRecognizing = true;
     okBtn.disabled = true;
     showStatus("Đang nhận diện...");
 
@@ -473,7 +742,7 @@ okBtn.addEventListener("click", function() {
             "Content-Type": "application/json"
         },
         body: JSON.stringify({
-            strokes: strokes
+            strokes: drawingStrokes
         })
     })
     .then(function(response) {
@@ -483,6 +752,7 @@ okBtn.addEventListener("click", function() {
     })
     .then(function(result) {
 
+        isRecognizing = false;
         okBtn.disabled = false;
 
         if (!result.ok) {
@@ -496,11 +766,12 @@ okBtn.addEventListener("click", function() {
         );
     })
     .catch(function(error) {
+        isRecognizing = false;
         okBtn.disabled = false;
         showStatus("Lỗi kết nối tới server.");
         console.error(error);
     });
-});
+}
 
 
 // ========================================
@@ -523,13 +794,7 @@ function updateButtons() {
 
 function showStatus(message) {
 
-    status.textContent = message;
-
-    setTimeout(function() {
-
-        status.textContent = "";
-
-    }, 2000);
+    statusElement.textContent = message;
 }
 
 

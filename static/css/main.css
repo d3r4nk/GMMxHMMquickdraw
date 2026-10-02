@@ -156,11 +156,8 @@ button:disabled {
 
 .camera-frame {
     position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     width: 100%;
-    min-height: 520px;
+    height: 560px;
     border-radius: 16px;
     overflow: hidden;
     background: linear-gradient(135deg, #0f172a, #1e293b);
@@ -168,12 +165,36 @@ button:disabled {
 }
 
 #cameraPreview {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
-    min-height: 520px;
     object-fit: cover;
     display: block;
     background: #0f172a;
+    transform: scaleX(-1);
+}
+
+#cameraCanvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+#cameraCursor {
+    position: absolute;
+    z-index: 1;
+    display: none;
+    width: 16px;
+    height: 16px;
+    border: 3px solid #18a879;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 0 0 3px rgba(24, 168, 121, 0.2);
+    pointer-events: none;
+    transform: translate(-50%, -50%);
 }
 
 .camera-placeholder {
@@ -196,4 +217,11 @@ button:disabled {
     font-size: 15px;
     font-weight: 700;
     color: #1f2937;
+}
+
+@media (max-width: 640px) {
+    .camera-frame {
+        height: min(70vh, 560px);
+        min-height: 360px;
+    }
 }
